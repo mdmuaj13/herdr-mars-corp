@@ -1,0 +1,4 @@
+# Written by Herdr (herdr-app check / the app) on every run; not part of the layout.
+gpui-kit.d.ts
+jsconfig.json
+*.error
