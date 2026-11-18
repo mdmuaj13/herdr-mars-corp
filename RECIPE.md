@@ -57,6 +57,15 @@ From the panel's branch name (a popover under it) or the status bar's branch (a 
 - Local branches, then remote branches, then tags, newest commit first within each, each row with its icon (branch, cloud, tag), name, and `Branch · abc1234 · 2 days ago`. The current branch is in `accent` and says `current`.
 - Below, a hint: `↑↓ to move · Enter to choose · Esc to close`.
 
+### Transfers (the folder tree, in a space on another machine)
+
+Both trees (the explorer's and the Files side panel's) add to their right-click menu:
+
+- On a file: `Download to Mac` (`Download to this computer` on Linux).
+- On a folder: `Upload here…`.
+
+While a transfer runs, the tree's footer shows `Downloading <name>… 40%` or `Uploading <name> (2 of 3)… 40%` in `blue`, with a 3px bar along its top (`raised` track, `blue` fill). When it ends, `✓ Downloaded <name>` or `✓ Uploaded 3 to <folder>`, or `Download failed` in `red`. Neither item shows in a space on this computer, or on Windows.
+
 ## How it behaves
 
 - **Sidebar views**: the footer's last icon runs `layout.select {stack: "sidebar-lists", child: "inbox" | "lists"}`; its icon and tooltip name the view it switches to.
@@ -84,6 +93,14 @@ From the panel's branch name (a popover under it) or the status bar's branch (a 
   - A local branch: `git checkout <branch>`. A remote branch `origin/x`: checks out local `x` if it exists, else `git checkout --track origin/x`. A tag: `git checkout --detach`, and the branch then reads `detached HEAD`.
   - Create new branch: `git checkout -b <name>` from the current commit. Create new branch from…: pick a ref, type the name, then `git checkout -b <name> --no-track <ref>`, so the new branch shows Publish Branch until it is pushed. Spaces in a name become dashes.
   - If git refuses (for example, local changes would be overwritten), its message shows and the picker stays open. There is no stash option.
+- **Transfers** (`transfer.js`, the same file in `filetree` and `mars-explorer`):
+  - The menu is its own popup, so `Download to Mac` posts `setShared("filetree.transfer", {from, abs, n})`; the tree whose uid is `from` runs the download, as Preview does.
+  - A download lands in `~/Downloads`, then Finder shows it (`open -R`) and a toast names the path. `Upload here…` posts a toast: "Drag files from Finder onto the tree: they go into the selected folder". The right-click has already selected that folder.
+  - Files dropped from Finder (`on_drop` on the list) go into the selected folder, the selected file's folder, or the root. Each upload gets a toast if it fails; the batch gets one when it ends, and the tree refreshes.
+  - A taken name gets a number, as browsers do: `a.txt`, `a (1).txt`, `a (2).txt`. Nothing is overwritten.
+  - Bytes go through `hc exec --on <machine>`, gzipped. Uploads go as base64 on stdin, in chunks of 1–4 MB (about 25 a file at most), appended to `<name>.part`. Downloads read 1 MB ranges (at most 32), four at a time, into local `<name>.part.<i>` files, then join them. Either way the size is checked, then `mv -n` gives it its name; a failure removes the partial files.
+  - The bar moves once per chunk or range, redrawn by the tree's one-second tick.
+  - A dropped folder is refused with a toast: only files transfer.
 - **Status bar branch**: shown when the active space is in a repository (Herdr's `spaces()[i].branch`). A click opens the picker for the repository of the focused pane's folder (else the space's) on the space's machine. The status bar's popup closes itself once a checkout or create succeeds.
 - **Agent statuses** come from Herdr's shipped `agents`, `spaces`, `pane` and the tab bar: a spinner while working, a dot for blocked or done.
 
@@ -98,15 +115,15 @@ From the panel's branch name (a popover under it) or the status bar's branch (a 
   - `tabs-plus`: a clone of Herdr's `tabs` whose `+` opens `new-menu-plus`.
   - `mars-pane`: a clone of Herdr's `pane` header (the layout's pane frame uses it). A mod pane's header shows a label instead of the mod's folder name: `source-control` as **Git**, `mars-explorer` (and `explorer`) as **Explorer**.
   - `new-menu-plus`: a clone of Herdr's `new-menu` with File explorer and Git rows.
-  - `mars-explorer`: props `{ root, on, open? }` (`open`: paths to open first). Named `mars-explorer` so it can sit beside another mod called `explorer`. Files: `main.js`, `filetree.js` (the embedded tree; it keeps the name `filetree` so its icons, `config.json` and right-click menu come from the installed `filetree` mod), `filetree-icons.js` (icon lookup table), `folders.js` (folder listing with `fs.readdir`, else PowerShell on Windows or `sh`; `git status` marks; `git check-ignore`), `languages.js` (extensions to grammars, Dark+ and Light+ colours), `markdown.js` (splits a document into prose and fenced code).
+  - `mars-explorer`: props `{ root, on, open? }` (`open`: paths to open first). Named `mars-explorer` so it can sit beside another mod called `explorer`. Files: `main.js`, `filetree.js` (the embedded tree; it keeps the name `filetree` so its icons, `config.json` and right-click menu come from the installed `filetree` mod), `filetree-icons.js` (icon lookup table), `folders.js` (folder listing with `fs.readdir`, else PowerShell on Windows or `sh`; `git status` marks; `git check-ignore`), `languages.js` (extensions to grammars, Dark+ and Light+ colours), `markdown.js` (splits a document into prose and fenced code), `transfer.js` (a copy of `filetree`'s).
   - `source-control`: props `{ root, on, picker? }`. Files: `main.js` (the tab), `git.js` (every git command), `diff.js` (unified diff to inline and side-by-side rows), `branches.js` (the branch picker).
   - `t3-inbox`, `t3-new-menu`, `t3-picker`: unchanged from [herdr-t3](https://github.com/JinJieBeWater/herdr-t3) by JinJieBeWater (Apache-2.0, `licenses/herdr-t3-LICENSE.txt`).
 - **Third-party mods in this repo**:
-  - `filetree`: an IDE-style file tree, a port of claude-code-filetree (MIT, Kurt Buhler). `config.json` holds its defaults; `bridge.ts` is an optional Claude Code hook (bun) that writes `~/.local/state/herdr-filetree/activity.jsonl`.
+  - `filetree`: an IDE-style file tree, a port of claude-code-filetree (MIT, Kurt Buhler). `config.json` holds its defaults; `bridge.ts` is an optional Claude Code hook (bun) that writes `~/.local/state/herdr-filetree/activity.jsonl`; `transfer.js` downloads and uploads files (`download(on, remote, job)`, `upload(on, local, dir, job)`; `job` gets `total` and `done` bytes).
   - `file-icons`: Herdr's `files` with Material Icon Theme icons (Apache-2.0 base, icons MIT). `filetree` reads its SVGs from `mods/file-icons/icons`.
 - **Herdr's shipped mods used**: `spaces`, `agents`, `pane`, `files`, `changes`, `menu`, `picker`, `machine-add`, `worktree`, and icons from `workspace-chrome`, `pane`, `files` and `changes`.
 - **`herdr` calls**: `exec` (git, and PowerShell or `sh` to list folders the app can't read itself), `fs/promises` `readdir`, `readTextFile`, `writeTextFile`, `watchFolder`, `pickFolder`, `run` (`tab.new`, `layout.select`, `layout.show`, `layout.hide`, `mod.open`, `app.settings`, `tab.*`, `window.*`), `openOverlay`, `closeOverlay`, `notify`, `spaces`, `panes`, `focused`, `theme`, `settings`, `keys`, `knownAgents`, `shared`, `setShared`.
-- **Programs it runs**: `git` (status, diff, add, restore, clean, rm --cached, commit, push, pull, checkout, for-each-ref, rev-parse, remote); PowerShell on Windows or `sh` elsewhere to list a folder outside the home folder or on another machine. No network requests of its own; push and pull reach the person's git remotes.
+- **Programs it runs**: `git` (status, diff, add, restore, clean, rm --cached, commit, push, pull, checkout, for-each-ref, rev-parse, remote); PowerShell on Windows or `sh` elsewhere to list a folder outside the home folder or on another machine; for transfers, `sh`, `hc exec`, `gzip`, `gunzip`, `base64`, `tail`, `head`, `wc`, `cat`, `test`, `mv` and `rm`, here and on the space's machine. No network requests of its own; push and pull reach the person's git remotes.
 - **Keys** (`keys.json`): the `mod:t3-inbox`, `mod:t3-new-menu` and `mod:t3-picker` sections from herdr-t3, so the close keys close those popups.
 - **Art**: Lucide icons (ISC), each `currentColor` so `svg()` tints them.
 
@@ -120,6 +137,8 @@ From the panel's branch name (a popover under it) or the status bar's branch (a 
 - On Windows, `cmd` in `keys.json` is the Windows key and Ctrl+Alt is AltGr.
 - If herdr-t3 is already installed, its `t3-inbox`, `t3-new-menu` and `t3-picker` are the same files: keep those and skip these copies, rather than installing renamed duplicates.
 - Clicks the footer, tab bar and status bar make go through Herdr commands, so a layout that renames `sidebar-lists`, `panel`, `panel-body` or `sidebar` must change `mars-chrome` and `tabs-plus` to match.
+- Transfers: `hc exec -i` takes at most 8 MB piped in, and hands a call's input and output over whole, so uploads go in chunks and progress can't move inside one. One stream reads about 125 KB/s from the other machine, which is why downloads run four ranges at once (eight were slower). Each extra call costs about 0.4 s.
+- A `v_virtual_list`'s rows can't hold handlers, including `on_drop`, so a drop lands on the list and goes to the selection, not the row under the pointer. A popup's work can end when it closes, so the menu asks the tree to download through `shared` instead of downloading itself.
 - Limits: the explorer lists 500 entries a folder and 5,000 in all, and edits files up to 400,000 characters. Source Control shows 2,000 changed files and 5,000 diff lines.
 
 ## Done when
@@ -127,5 +146,6 @@ From the panel's branch name (a popover under it) or the status bar's branch (a 
 - `herdr-app check` passes for `mars-chrome`, `mars-status`, `mars-pane`, `tabs-plus`, `new-menu-plus`, `mars-explorer`, `filetree`, `file-icons`, `source-control` and the three `t3-*` mods, and `layout.switch {name: "mars-corp"}` shows the layout with no error in `herdr-app status`.
 - The footer shows four icons in one row; the last switches the sidebar between Spaces/Agents and the Inbox, and its tooltip follows.
 - `+` → File explorer opens a tab on the focused folder, and its split right button opens it beside the focused pane in the same tab; a click on a `.js` file opens it coloured; typing marks the tab ●; Ctrl+S saves and clears it; a `.md` file opens as a preview with Edit.
+- In a space on another machine, right-clicking a file and choosing `Download to Mac` puts it in `~/Downloads` with the same sha256 as on that machine, and the footer's bar fills as it goes; doing it again gives `<name> (1)`. Dropping a Finder file on the tree with a folder selected puts it in that folder, byte for byte. In a space on this computer neither menu item shows.
 - `+` → Git in a repository with one edited file lists it under CHANGES with a diff; Stage moves it to STAGED CHANGES; a message and Commit commits it; on a branch with an upstream the button becomes `Sync Changes 0↓ 1↑`, and clicking it pushes.
 - Clicking the branch name, in the panel or the status bar, lists local branches, remote branches and tags; typing `feat` filters them; `Create new branch "x"` makes and checks out `x`, and the header, the status bar and the sidebar show `x`.

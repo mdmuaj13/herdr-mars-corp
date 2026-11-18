@@ -7,6 +7,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle, TextView } from "gpui-base";
 import ICONS from "./filetree-icons.js"; // copied from the file-icons mod (mods cannot import across folders)
+import { download, upload } from "./transfer.js";
 import { spaces, panes, agents, focused, exec, readTextFile, watchFolder, theme, settings, window, layout, home, appHome, props, run, notify, openOverlay, closeOverlay, shared, setShared } from "herdr";
 
 // Embedded copy of the filetree mod's view, shown as Explorer's folder tree. NAME stays "filetree"
@@ -261,6 +262,8 @@ function copy(cx, text) {
   cx.write_to_clipboard(text);
   notify({ title: "Copied", body: text, level: "info", timeout: 2000 });
 }
+// Downloads and uploads need a space on another machine, and sh on this one.
+const canTransfer = (on) => Boolean(on) && window()?.platform !== "windows";
 // Types "@path " into the agent of the shown tab, through the clipboard, then puts the
 // clipboard back. The agent's pane takes the keyboard so the question can follow.
 function sendToAgent(cx, abs) {
@@ -284,6 +287,8 @@ export default class FileTree extends View {
     this.menu = this.embed ? null : (props()?.menu ?? null);
     if (this.menu) return;
     this.handle = cx.focus_handle();
+    // The right-click menu is its own popup: it asks this tree for downloads by uid.
+    this.uid = Math.random().toString(36).slice(2); this.seenTransfer = shared(`${NAME}.transfer`)?.n ?? 0;
     this.scroll = VirtualListScrollHandle.new();
     this.config = { ...DEFAULTS };
     let prefs = {};
@@ -681,6 +686,8 @@ export default class FileTree extends View {
     }
     if (this.chip && now - this.chip.at > (this.chip.state === "running" ? RUNNING_MS : CHIP_MS)) { this.chip = null; dirty = true; }
     if (this.branchFlash && now - this.branchFlash.at > FLASH_MS) { this.branchFlash = null; dirty = true; }
+    // A running transfer's bar follows its job (transfer.js counts the bytes).
+    if (this.chip?.state === "running" && this.chip.job) dirty = true;
     if (this.showSize && this.view === "tree") this.pumpSizes(cx);
     // Recent shows "4m ago"-style times; refresh them twice a minute, only while shown.
     if (this.view === "recent" && now - this.agoAt > 30000) { this.agoAt = now; dirty = true; }
@@ -760,7 +767,49 @@ export default class FileTree extends View {
 
   openMenu(rel, dir) {
     const abs = join(this.root, rel);
-    openOverlay({ mod: NAME, kind: "popup", width: 210, height: dir ? 5 * 28 + 10 : 7 * 28 + 10, props: { menu: { root: this.root, rel, abs, dir, local: !this.on } } });
+    openOverlay({ mod: NAME, kind: "popup", width: 210, height: dir ? 5 * 28 + 10 : 7 * 28 + 10, props: { menu: { root: this.root, rel, abs, dir, local: !this.on, on: this.on, from: this.uid } } });
+  }
+
+  // ── to and from the space's machine ──────────────────────────────────────────────────
+  // `job` holds a running transfer's bytes for the footer's bar (transfer.js fills it).
+  transferChip(label, state, job = null) { this.chip = { label, tone: "blue", state, detail: "", at: Date.now(), job }; }
+
+  download(abs, cx) {
+    const on = this.on, name = baseOf(abs);
+    const job = {};
+    this.transferChip(`Downloading ${name}`, "running", job);
+    cx.spawn(async (cx) => {
+      try {
+        const dest = await download(on, abs, job);
+        this.transferChip(`Downloaded ${name}`, "done");
+        notify({ title: `Downloaded ${name}`, body: dest, level: "success", timeout: 4000 });
+        revealExternal(dest).catch(() => {});
+      } catch (e) {
+        this.transferChip("Download failed", "failed");
+        notify({ title: `Could not download ${name}`, body: String(e?.message ?? e), level: "error", timeout: 6000 });
+      }
+      cx.notify();
+    });
+  }
+
+  // Files dropped from Finder go into the selected folder (or the selected file's), else the root.
+  // The list's rows can't hold handlers, so the drop lands on the list as a whole.
+  drop(paths, cx) {
+    if (!this.root || !canTransfer(this.on)) { notify({ title: "Nothing to upload to", body: "Drop files on a tree showing another machine's folder", level: "warning", timeout: 4000 }); return; }
+    const cur = this.rows().find((r) => r.rel === this.cursor), rel = !cur ? "" : cur.e?.dir ? cur.rel : dirOf(cur.rel);
+    const on = this.on, dir = join(this.root, rel), where = rel || baseOf(this.root);
+    cx.spawn(async (cx) => {
+      let sent = 0;
+      for (const [i, p] of paths.entries()) {
+        const job = {};
+        this.transferChip(`Uploading ${baseOf(p)}${paths.length > 1 ? ` (${i + 1} of ${paths.length})` : ""}`, "running", job); cx.notify();
+        try { await upload(on, p, dir, job); sent++; }
+        catch (e) { notify({ title: `Could not upload ${baseOf(p)}`, body: String(e?.message ?? e), level: "error", timeout: 6000 }); }
+      }
+      this.transferChip(sent ? `Uploaded ${sent} to ${where}` : "Upload failed", sent ? "done" : "failed");
+      if (sent) { notify({ title: `Uploaded ${sent} file${sent > 1 ? "s" : ""}`, body: `to ${where}`, level: "success", timeout: 4000 }); this.refresh(cx); }
+      cx.notify();
+    });
   }
 
   // A virtual list's rows can't hold handlers, so the list reports the row and
@@ -932,11 +981,17 @@ export default class FileTree extends View {
     if (!this.cursor && !c) return null;
     const color = c ? (c.state === "failed" ? tone.red : tone[c.tone] ?? t.accent) : null;
     const hash = c?.state === "done" ? c.detail.split(" ")[0] : "";
-    return h_flex().h(24).flex_none().px(10).gap(8).items_center().text_size(11).border_t(1).border_color(t.border)
+    // A running transfer adds its percentage and a bar along the top.
+    const j = c?.state === "running" ? c.job : null, frac = j?.total ? Math.min(1, j.done / j.total) : 0;
+    const pct = j?.total ? ` ${Math.floor(frac * 100)}%` : "";
+    const row = h_flex().h(24).flex_none().px(10).gap(8).items_center().text_size(11)
       .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(this.cursor ? this.cursor : ""))
       .when(Boolean(c), (el) => el.child(h_flex().flex_none().gap(4).items_center().text_color(color)
-        .child(div().when(c.state === "running", (d) => d.font_semibold().loop("opacity", { from: 0.4, to: 1, period: 1000 })).child(c.state === "running" ? `${c.label}…` : c.state === "done" ? `✓ ${c.label}` : c.label))
+        .child(div().when(c.state === "running", (d) => d.font_semibold().loop("opacity", { from: 0.4, to: 1, period: 1000 })).child(c.state === "running" ? `${c.label}…${pct}` : c.state === "done" ? `✓ ${c.label}` : c.label))
         .when(Boolean(hash), (d) => d.child(div().text_color(t.dim).child(hash)))));
+    return v_flex().flex_none().border_t(1).border_color(t.border)
+      .when(Boolean(j), (el) => el.child(div().h(3).w_full().bg(t.raised).child(div().h_full().w(Math.max(0, this.width * frac)).bg(color))))
+      .child(row);
   }
 
   renderMenu(cx) {
@@ -948,6 +1003,10 @@ export default class FileTree extends View {
     if (!m.dir) items.push(item("m-preview", "Preview", () => setShared(`${NAME}.preview`, { root: m.root, rel: m.rel, n: Date.now() })));
     if (!m.dir && m.local) items.push(item("m-open", "Open in default app", () => openExternal(m.abs).catch((e) => notify({ title: "Could not open the file", body: String(e?.message ?? e), level: "error" }))));
     if (m.local) items.push(item("m-reveal", window()?.platform === "macos" ? "Reveal in Finder" : "Show in folder", () => revealExternal(m.abs).catch(() => {})));
+    if (canTransfer(m.on) && !m.dir) items.push(item("m-download", window()?.platform === "macos" ? "Download to Mac" : "Download to this computer",
+      () => setShared(`${NAME}.transfer`, { from: m.from, abs: m.abs, n: Date.now() })));
+    if (canTransfer(m.on) && m.dir) items.push(item("m-upload", "Upload here…",
+      () => notify({ title: `Upload to ${m.rel || baseOf(m.root)}`, body: "Drag files from Finder onto the tree: they go into the selected folder", level: "info", timeout: 6000 })));
     items.push(item("m-rel", "Copy relative path", (cx) => copy(cx, m.rel)));
     items.push(item("m-abs", "Copy absolute path", (cx) => copy(cx, m.abs)));
     items.push(item("m-send", "Send to agent", (cx) => sendToAgent(cx, m.abs)));
@@ -959,6 +1018,8 @@ export default class FileTree extends View {
     this.sync(cx);
     const req = shared(`${NAME}.preview`);
     if (req && req.n !== this.seenPreview) { this.seenPreview = req.n; if (req.root === this.root) this.show(req.rel, cx, true); }
+    const tr = shared(`${NAME}.transfer`);
+    if (tr && tr.n !== this.seenTransfer) { this.seenTransfer = tr.n; if (tr.from === this.uid) this.download(tr.abs, cx); }
     // Another mod (session-bar's changed chip) asks for a view.
     const want = shared(`${NAME}.view`);
     if (want && want.n !== this.seenView) {
@@ -1026,7 +1087,7 @@ export default class FileTree extends View {
           .child(Input.new(this.input).flex_1().h_full().text_size(12).text_color(t.foreground))
           .when(Boolean(this.query), (el) => el.child(div().id("ft-clear").flex_none().text_size(12).text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => this.clearSearch(cx)).child("×"))))
         .children(tools))
-      .child(div().flex_1().min_h(0).relative().px(4)
+      .child(div().flex_1().min_h(0).relative().px(4).on_drop((e, cx) => this.drop(e.paths, cx))
         .child(v_virtual_list("ft-rows", rows.length, ROW, (i) => rows[i]?.rel ?? String(i), (range) => {
           const shown = rows.slice(range.start, range.end);
           this.visible = shown.filter((r) => !r.flat && r.e?.dir).map((r) => r.rel);
